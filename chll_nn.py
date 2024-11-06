@@ -80,7 +80,7 @@ def download(start_date, end_date, datastore,  output_dir, collectionID='EO:EUM:
             lines.append(f"Iteration {product}: {elapsed_time:.2f} seconds\n")
     lines.append(f"Total time: {total_time:.2f} seconds\n")
 
-    with open(os.path.join(output_dir,'entry','time_download'), 'w') as file:
+    with open(os.path.join(output_dir, 'time_download'), 'w') as file:
         file.writelines(lines)
         
 
@@ -165,7 +165,7 @@ def process_chlorophyll_data(vec, roi, directory = None):
         total_time += elapsed_time
         lines.append(f"Iteration {paths}: {elapsed_time:.2f} seconds\n")
     lines.append(f"Total time: {total_time:.2f} seconds\n")
-    with open(os.path.join(directory, 'entry', 'read_time'), 'w') as file:
+    with open(os.path.join(directory,   'read_time'), 'w') as file:
         file.writelines(lines)
     return df
 
@@ -208,8 +208,8 @@ def main():
     # except ValueError:
     #     print("Formato de fecha incorrecto. Por favor, use el formato YYYY-MM-DD.")
     #     return
-    start_date = "2022-01-01"
-    end_date = "2022-01-02"
+    start_date = "2019-01-01"
+    end_date = "2019-11-11"
     # Definir el ID de la colección
     collectionID = 'EO:EUM:DAT:0407'
     
