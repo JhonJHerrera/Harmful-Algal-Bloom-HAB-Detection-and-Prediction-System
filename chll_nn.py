@@ -39,7 +39,8 @@ def download(directories, start_date, end_date, datastore, output_dir, roi, coll
         # Process each found product
         for product in products:
             list_prod.append(product)
-            
+            start_time = time.time()
+
             for entry in product.entries:
                 entry_name = entry.split('_')[7] if len(entry.split('_')) > 7 else 'entry'
                 
