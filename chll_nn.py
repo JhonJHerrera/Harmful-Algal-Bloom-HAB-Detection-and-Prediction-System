@@ -1,3 +1,4 @@
+import argparse
 import datetime                 # For handling dates and times
 from datetime import datetime   # For precise datetime operations
 import os                       # For interacting with the operating system (e.g., file and directory operations)
@@ -330,8 +331,24 @@ def main(
     # Summarize chlorophyll data for each specified radius
     for rs in radii:
         print(f"Summarizing chlorophyll data for radius: {rs}")
-        summarize_chlorophyll_data(directories, download_dir, radius=rs)
+        summarize_chlorophyll_data(directories, download_dir, buoy_long, buoy_lat, radius=rs)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run Harmful Algal Bloom Detection System")
+    
+    parser.add_argument("--longps", type=float, default=-117.31646, help="Longitude of the ROI center")
+    parser.add_argument("--latgps", type=float, default=32.92993, help="Latitude of the ROI center")
+    parser.add_argument("--factor", type=float, default=0.01802, help="Offset to define ROI boundary")
+    parser.add_argument("--start_date", type=str, default="2022-01-23", help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default="2022-01-24", help="End date (YYYY-MM-DD)")
+    parser.add_argument("--collection_ids", nargs="+", default=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], help="Collection IDs to search")
+    parser.add_argument("--directory", type=str, default="productx", help="Directory for outputs")
+    parser.add_argument("--buoy_long", type=float, default=-117.31646, help="Longitude of the buoy")
+    parser.add_argument("--buoy_lat", type=float, default=32.92993, help="Latitude of the buoy")
+    parser.add_argument("--radii", nargs="+", type=float, default=[1, 0.02, 0.01, 0.005], help="Radii for summarization")
+
+    args = parser.parse_args()
+    
+    # Pass parsed arguments to the main function
+    main(args.longps, args.latgps, args.factor, args.start_date, args.end_date, args.collection_ids, args.directory, args.buoy_long, args.buoy_lat, args.radii)
