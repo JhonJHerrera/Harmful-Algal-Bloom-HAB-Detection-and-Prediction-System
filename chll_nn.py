@@ -186,8 +186,8 @@ def process_chlorophyll_data(datastore, longps, latgps, factor, start_date, end_
 
 def summarize_chlorophyll_data(directories, products_dir, buoy_long=-117.31646, buoy_lat=32.92993, radius=0.01, output_csv="chlorophyll_summary.csv"):
     """
-    Summarizes chlorophyll data by calculating average, median, and mode values 
-    from 'chlorophyll_roi.csv' files within each product directory.
+    Summarizes chlorophyll data, calculating average, median, mode, and pixel concentration
+    from the 'chlorophyll_roi.csv' files within each product directory.
 
     Parameters:
     - directories (list): List of directories containing product data.
@@ -232,7 +232,8 @@ def summarize_chlorophyll_data(directories, products_dir, buoy_long=-117.31646, 
             df['distance_to_buoy'] = np.sqrt((df['latitude'] - buoy_lat)**2 + (df['longitude'] - buoy_long)**2)
 
             # Filter data points within the specified radius
-            chlorophyll_values = df[df['distance_to_buoy'] <= radius]['chlorophyll'].dropna()
+            filtered_df = df[df['distance_to_buoy'] <= radius]
+            chlorophyll_values = filtered_df['chlorophyll'].dropna()
 
             # If no chlorophyll values are found within the radius, log a message and skip
             if chlorophyll_values.empty:
@@ -244,6 +245,7 @@ def summarize_chlorophyll_data(directories, products_dir, buoy_long=-117.31646, 
             median_val = chlorophyll_values.median()  # Median chlorophyll value
             # Mode chlorophyll value (handles empty mode gracefully)
             mode_val = chlorophyll_values.mode().iloc[0] if not chlorophyll_values.mode().empty else np.nan
+            pixel_concentration = len(filtered_df)  # Number of pixels within the radius
 
             # Append the summary data for the current directory
             summary_data.append({
@@ -251,7 +253,8 @@ def summarize_chlorophyll_data(directories, products_dir, buoy_long=-117.31646, 
                 "time": time,  # Time of the data
                 "mean_val": mean_val,  # Mean chlorophyll value
                 "median_val": median_val,  # Median chlorophyll value
-                "mode_val": mode_val  # Mode chlorophyll value
+                "mode_val": mode_val,  # Mode chlorophyll value
+                "pixel_concentration": pixel_concentration  # Number of pixels within the radius
             })
 
     # Create a DataFrame from the collected summary data
@@ -272,7 +275,7 @@ def main(
     start_date="2022-01-23", 
     end_date="2022-01-24", 
     collection_ids=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], 
-    directory='productx',  
+    directory='new_products',  
     buoy_long=-117.31646, 
     buoy_lat=32.92993,
     radii=[1, 0.02, 0.01, 0.005]
