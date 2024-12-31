@@ -4,3 +4,5 @@ chll_nn copy.py
 mean_chll.py
 mean_chll.py
 mean_chll copy.py
+.DS_Store
+.ipynb_checkpoints

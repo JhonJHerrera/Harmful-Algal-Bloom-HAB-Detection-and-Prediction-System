@@ -8,7 +8,7 @@ import eumdac                   # For accessing EUMETSAT data services
 import xarray as xr             # For handling multi-dimensional labeled data arrays (e.g., NetCDF files)
 import matplotlib.pyplot as plt # For creating visualizations and plots
 import numpy as np              # For numerical operations and array manipulation
-import eumartools               # For tools related to EUMETSAT data (specific functionality required)
+# import eumartools               # For tools related to EUMETSAT data (specific functionality required)
 from shapely import geometry, vectorized  # For geometric operations, handling polygons and spatial relationships
 import csv                      # For reading and writing CSV files
 import time                     # For handling delays and measuring execution time
