@@ -1,354 +1,267 @@
 import argparse
-import datetime                 # For handling dates and times
-from datetime import datetime   # For precise datetime operations
-import os                       # For interacting with the operating system (e.g., file and directory operations)
-from pathlib import Path        # For object-oriented file path manipulations
-import shutil                   # For high-level file operations (e.g., copying and removing files)
-import eumdac                   # For accessing EUMETSAT data services
-import xarray as xr             # For handling multi-dimensional labeled data arrays (e.g., NetCDF files)
-import matplotlib.pyplot as plt # For creating visualizations and plots
-import numpy as np              # For numerical operations and array manipulation
-# import eumartools               # For tools related to EUMETSAT data (specific functionality required)
-from shapely import geometry, vectorized  # For geometric operations, handling polygons and spatial relationships
-import csv                      # For reading and writing CSV files
-import time                     # For handling delays and measuring execution time
-import pandas as pd             # For data manipulation and analysis, especially with tabular data
+import datetime
+from datetime import datetime
+import logging
+import os
+from pathlib import Path
+import shutil
+import eumdac
+import xarray as xr
+import numpy as np
+from shapely import geometry
+import time
+import pandas as pd
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
-def process_chlorophyll_data(datastore, longps, latgps, factor, start_date, end_date, collection_ids, download_dir):
+def process_chlorophyll_data(datastore, longps, latgps, factor, start_date, end_date, collection_ids, download_dir, selected_products):
     """
-    Processes chlorophyll data by downloading, filtering, and analyzing satellite products
-    within a specified region of interest (ROI) and date range. Saves the results to CSV files
-    and logs processing times for each product.
-
-    Parameters:
-        datastore (object): Interface for accessing satellite data collections.
-        longps (float): Longitude of the center of the ROI.
-        latgps (float): Latitude of the center of the ROI.
-        factor (float): Offset to create the ROI boundaries.
-        start_date (str): Start date for the product search (ISO format: 'YYYY-MM-DD').
-        end_date (str): End date for the product search (ISO format: 'YYYY-MM-DD').
-        collection_ids (list): List of collection IDs to search for satellite data.
-        download_dir (str): Directory to save downloaded files and outputs.
-
-    Returns:
-        list: A list of processed directory names.
+    Downloads and processes satellite chlorophyll data based on selected products, excluding tie_geo_coordinates.nc.
     """
-    directories = []  # List to store processed directory names
-    downloaded = []  # List to keep track of already downloaded products
-    max_retries = 3  # Maximum number of retries for download errors
-    retry_delay = 5  # Initial delay (in seconds) between retries
-    time_log_file = os.path.join(download_dir, 'time.txt')  # File to log processing times
-    total_time_spent = 0  # Total time spent on processing all products
+    directories = []
+    downloaded = []
+    max_retries = 3
+    retry_delay = 5
+    time_log_file = os.path.join(download_dir, 'time.txt')
+    total_time_spent = 0
 
-    # Path to track downloaded products
     directories_list_file = os.path.join(download_dir, 'products.txt')
 
-    # Initialize or create the time log file
     with open(time_log_file, 'w') as time_file:
-        time_file.write("Product ID,Time Spent (seconds)\n")  # Write header to time log file
+        time_file.write("Product ID,Time Spent (seconds)\n")
 
-    # Load previously downloaded products if the tracking file exists
     if os.path.exists(directories_list_file):
         with open(directories_list_file, 'r') as file:
             downloaded = [line.strip() for line in file.readlines()]
     else:
-        # Create the tracking file if it doesn't exist
         with open(directories_list_file, 'w') as file:
             pass
 
-    # Define the region of interest (ROI) as a polygon
-    roi = [[longps + factor, latgps + factor], [longps - factor, latgps + factor],
-           [longps - factor, latgps - factor], [longps + factor, latgps - factor],
-           [longps + factor, latgps + factor]]
+    # Exclude tie_geo_coordinates.nc from the selected products
+    selected_products = [product for product in selected_products if product != "tie_geo_coordinates.nc"]
 
-    # Loop through each collection ID to search for products
+    # Define ROI as a closed polygon
+    roi_coords = [(longps + factor, latgps + factor),
+                  (longps - factor, latgps + factor),
+                  (longps - factor, latgps - factor),
+                  (longps + factor, latgps - factor),
+                  (longps + factor, latgps + factor)]
+    roi_wkt = "POLYGON((" + ", ".join([f"{lon} {lat}" for lon, lat in roi_coords]) + "))"
+
     for collection_id in collection_ids:
-        selected_collection = datastore.get_collection(collection_id)  # Access collection
+        selected_collection = datastore.get_collection(collection_id)
 
         try:
-            # Search for products within the ROI and date range
-            products = selected_collection.search(
-                geo='POLYGON(({}))'.format(','.join(["{} {}".format(*coord) for coord in roi])),
-                dtstart=start_date,
-                dtend=end_date
-            )
+            products = selected_collection.search(geo=roi_wkt, dtstart=start_date, dtend=end_date)
         except Exception as e:
-            print(f"Error searching products in collection {collection_id}: {e}")
-            continue  # Skip to the next collection ID
+            print(f"Error searching products in {collection_id}: {e}")
+            continue
 
-        # Loop through the found products
         for product in products:
-            start_time = time.time()  # Start timing this product's processing
-            product_id = product._id  # Extract product's unique identifier
-            if product_id in downloaded:
-                continue  # Skip already downloaded products
+            start_time = time.time()
+            product_id = product._id
 
-            # Extract a readable name for the product
+            if product_id in downloaded:
+                continue
+
             entry_name = product_id.split('_')[7] if len(product_id.split('_')) > 7 else 'entry'
             print(f"Processing product {product_id}")
 
-            # Download required entries for the product
+            downloaded_files = []
+
+            # **Step 1: Download all required files before processing**
             for entry in product.entries:
-                if (('geo_coordinates.nc' in entry or 'chl' in entry) and not 'tie_geo_coordinates.nc' in entry):
-                    attempt = 0  # Initialize retry attempts
+                if any(filename in entry for filename in selected_products):
+                    if "tie_geo_coordinates.nc" in entry:
+                        print(f"Skipping {entry} as per user request.")
+                        continue  # Skip downloading tie_geo_coordinates.nc
+
+                    attempt = 0
                     while attempt < max_retries:
                         try:
-                            # Open the entry and save it to the local directory
-                            with product.open(entry=entry) as fsrc, open(os.path.join(download_dir, fsrc.name), mode='wb') as fdst:
-                                print(f'Downloading {fsrc.name} of {entry_name}. Attempt {attempt + 1}.')
+                            file_path = os.path.join(download_dir, os.path.basename(entry))
+                            with product.open(entry=entry) as fsrc, open(file_path, mode='wb') as fdst:
+                                print(f'Downloading {fsrc.name} from {entry_name}. Attempt {attempt + 1}.')
                                 shutil.copyfileobj(fsrc, fdst)
-                                print(f'Download of file {fsrc.name} finished.')
-                            break  # Exit retry loop on success
+                                print(f'Download complete: {fsrc.name}')
+                            downloaded_files.append(file_path)
+                            break
                         except Exception as e:
                             attempt += 1
                             print(f"Error downloading {entry}: {e}. Retrying in {retry_delay} seconds...")
                             time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff for retries
+                            retry_delay = min(retry_delay * 2, 60)
                     else:
-                        print(f"Failed to download {entry} after {max_retries} attempts. Skipping...")
+                        print(f"Persistent error in {entry}. Skipping...")
                         continue
 
-            # Paths to the downloaded files
-            chl_path, geo_path, chl_oc4me_path = (
-                os.path.join(download_dir, 'chl_nn.nc'),
-                os.path.join(download_dir, 'geo_coordinates.nc'),
-                os.path.join(download_dir, 'chl_oc4me.nc')
-            )
+            # **Step 2: Ensure all required fil es are downloaded before proceeding**
+            file_map = {os.path.basename(f): f for f in downloaded_files}
+            geo_path = file_map.get("geo_coordinates.nc")
+            flag_path = file_map.get("wqsf.nc")
+            chl_path = file_map.get("chl_nn.nc")
 
-            # Skip if required files are missing
-            if not all(os.path.exists(path) for path in [chl_path, geo_path, chl_oc4me_path]):
-                print(f"Missing files for product {entry_name}. Skipping...")
+            if not geo_path or not flag_path or not chl_path:
+                print(f"Missing one or more essential files for {entry_name}. Skipping processing.")
                 continue
 
+            directories.append(str(entry_name))
+            downloaded.append(product_id)
+
+            with open(directories_list_file, 'a') as file:
+                file.write(f"{product_id}\n")
+
+            # **Step 3: Process the downloaded files**
             try:
-                # Process geographic data
+                # Load Geographic Data
                 geo_data = xr.open_dataset(geo_path)
                 lat, lon = geo_data['latitude'].data, geo_data['longitude'].data
-                polygon = geometry.Polygon(roi)
-                # Create a mask of points within the ROI
-                point_mask = np.array([polygon.contains(geometry.Point(x, y)) for x, y in zip(lon.flatten(), lat.flatten())]).reshape(lon.shape)
                 geo_data.close()
 
-                # Process chlorophyll data
-                chl_data = xr.open_dataset(chl_path)
-                chl_values = chl_data['CHL_NN'].data
-                chl_data.close()
-                chl_roi = chl_values[point_mask]  # Filter data for points within the ROI
-                lat_roi, lon_roi = lat[point_mask], lon[point_mask]
+                # Create spatial mask
+                polygon = geometry.Polygon(roi_coords)
+                point_mask = np.array([polygon.contains(geometry.Point(x, y)) for x, y in zip(lon.flatten(), lat.flatten())]).reshape(lon.shape)
 
-                # Create a DataFrame with the filtered data
+                # Validate mask shape
+                if lat.shape != point_mask.shape:
+                    print(f"Warning: Shape mismatch detected for {entry_name}. Setting flag columns empty.")
+                    point_mask = np.zeros_like(lat, dtype=bool)  # Create an empty mask
+
+                # Convert to datetime object
+                datetime_obj = datetime.strptime(entry_name, "%Y%m%dT%H%M%S")
+
+                # Create DataFrame with datetime column
                 df = pd.DataFrame({
-                    'latitude': lat_roi,
-                    'longitude': lon_roi,
-                    'chlorophyll': chl_roi
+                    "latitude": lat[point_mask],
+                    "longitude": lon[point_mask],
+                    "datetime": datetime_obj  # This adds the same datetime to all rows
                 })
 
-                # Add additional chlorophyll data if available
-                chl_oc4me_data = xr.open_dataset(chl_oc4me_path)
-                df['chlorophyll_oc4me'] = chl_oc4me_data['CHL_OC4ME'].data[point_mask]
-                chl_oc4me_data.close()
 
-                # Save the DataFrame to a CSV file
+                # Process WQSF Flags
+                if flag_path:
+                    flag_data = xr.open_dataset(flag_path)
+                    wqsf_values = flag_data['WQSF'].data
+                    flag_data.close()
+                    df['INVALID'] = (wqsf_values[point_mask] & (1 << 0)) > 0
+                    df['WATER'] = (wqsf_values[point_mask] & (1 << 1)) > 0
+                    df['CLOUD'] = (wqsf_values[point_mask] & (1 << 2)) > 0
+                    df['LAND'] = (wqsf_values[point_mask] & (1 << 3)) > 0
+
+                # Define the path for the variable list file
+                var_list_file = os.path.join(download_dir, "var_names.txt")
+
+                # Load existing variable names if the file exists, otherwise create an empty set
+                if os.path.exists(var_list_file):
+                    with open(var_list_file, "r") as file:
+                        existing_vars = set(line.strip() for line in file.readlines())
+                else:
+                    existing_vars = set()
+
+                # Process Other NetCDF Variables
+                for file in downloaded_files:
+                    if file.endswith(".nc") and file not in [geo_path, flag_path]:
+                        try:
+                            with xr.open_dataset(file) as dataset:
+                                for var_name in dataset.data_vars:
+                                    var_data = dataset[var_name].data
+                                    if var_data.shape == lat.shape:
+                                        df[var_name] = var_data[point_mask]
+                                        existing_vars.add(var_name)  # Add new variable name to the set
+                                    else:
+                                        print(f"Shape mismatch for {var_name} in {file}. Skipping...")
+                        except Exception as e:
+                            print(f"Error processing {file}: {e}")
+
+                # Save the updated variable names back to the file
+                with open(var_list_file, "w") as file:
+                    for var in sorted(existing_vars):  # Sort for better readability
+                        file.write(var + "\n")
+
+                # **Step 4: Save CSV**
                 output_path = os.path.join(download_dir, f"{entry_name}.csv")
                 df.to_csv(output_path, index=False)
-                print(f"DataFrame saved to: {output_path}")
-
-                directories.append(str(entry_name))  # Add entry to processed list
-                downloaded.append(product_id)  # Mark product as downloaded
-
-                # Update the tracking file
-                with open(directories_list_file, 'a') as file:
-                    file.write(f"{product_id}\n")
-
-                # Clean up temporary files
-                for file in [chl_path, chl_oc4me_path, geo_path]:
-                    if os.path.exists(file):
-                        os.remove(file)
+                print(f"DataFrame saved at: {output_path}")
 
             except Exception as e:
-                print(f"Error processing files for product {entry_name}: {e}")
+                logging.error(f"Error processing files for {entry_name}: {e}")
 
-            end_time = time.time()  # End timing this product's processing
+            finally:
+                # Clean up: Delete downloaded .nc files before moving to the next
+                for file in downloaded_files:
+                    if os.path.exists(file):
+                        os.remove(file)
+                print(f"Cleaned up temporary files for {entry_name}")
+
+            end_time = time.time()
             time_spent = end_time - start_time
-            total_time_spent += time_spent  # Update total processing time
-            # Log time spent for this product
+            total_time_spent += time_spent
+
             with open(time_log_file, 'a') as time_file:
                 time_file.write(f"{entry_name} -- {time_spent:.2f} seconds\n")
-            print(f"Time spent on product {entry_name} -- {time_spent:.2f} seconds")
+            logging.info(f"Processing time: {entry_name} -- {time_spent:.2f} seconds")
 
-    # Write the total time spent to the time log file
-    with open(time_log_file, 'a') as time_file:
-        time_file.write(f"\nTotal Time Spent,{total_time_spent:.2f} seconds\n")
-    print(f"Total time spent on all products: {total_time_spent:.2f} seconds")
+    logging.info(f"Total processing time: {total_time_spent:.2f} seconds")
 
-    return directories
+def km_to_degrees(km):
+    return km / 111.32
 
 
-def summarize_chlorophyll_data(directories, products_dir, buoy_long=-117.31646, buoy_lat=32.92993, radius=0.01, output_csv="chlorophyll_summary.csv"):
+def main(args):
+    """product_list = [
+        "EOPMetadata.xml", "instrument_data.nc",
+        "iop_lsd.nc", "iop_nn.nc", "iwv.nc", "Oa01_reflectance.nc", "Oa02_reflectance.nc", 
+        "Oa03_reflectance.nc", "Oa04_reflectance.nc", "Oa05_reflectance.nc", "Oa06_reflectance.nc", 
+        "Oa07_reflectance.nc", "Oa08_reflectance.nc", "Oa09_reflectance.nc", "Oa10_reflectance.nc",
+        "Oa11_reflectance.nc", "Oa12_reflectance.nc", "Oa16_reflectance.nc","Oa17_reflectance.nc",
+        "Oa18_reflectance.nc", "Oa21_reflectance.nc","par.nc","tie_geo_coordinates.nc","tie_meteo.nc",
+        "time_coordinates.nc", "trsp.nc",  "tsm_nn.nc","w_aer.nc"
+    ]
     """
-    Summarizes chlorophyll data, calculating average, median, mode, and pixel concentration
-    from the 'chlorophyll_roi.csv' files within each product directory.
-
-    Parameters:
-    - directories (list): List of directories containing product data.
-    - products_dir (str): Base directory where the product files are located.
-    - buoy_long (float): Longitude of the buoy (reference point).
-    - buoy_lat (float): Latitude of the buoy (reference point).
-    - radius (float): Radius (in degrees) around the buoy for filtering data points.
-    - output_csv (str): Name of the output CSV file for the summary.
-
-    Returns:
-    - summary_df (DataFrame): DataFrame containing the summarized chlorophyll data.
-    """
-
-    # Initialize a list to store summary data
-    summary_data = []
-
-    # Iterate through each directory listed in the directories parameter
-    for directory in directories:
-        # Extract the date and time from the directory name (assumes a specific naming convention)
-        try:
-            datetime_obj = datetime.strptime(directory, "%Y%m%dT%H%M%S")  # Parse the directory name into a datetime object
-            date = datetime_obj.strftime("%Y-%m-%d")  # Extract the date in "YYYY-MM-DD" format
-            time = datetime_obj.strftime("%H:%M:%S")  # Extract the time in "HH:MM:SS" format
-        except ValueError:
-            # If the directory name doesn't match the expected format, log an error and skip
-            print(f"Invalid date format in directory name: {directory}")
-            continue
-
-        # Define the path to the CSV file within the current directory
-        csv_file_path = os.path.join(products_dir, f"{directory}.csv")
-
-        # Read the CSV file into a DataFrame
-        try:
-            df = pd.read_csv(csv_file_path)
-        except FileNotFoundError:
-            print(f"CSV file not found for directory: {directory}")
-            continue
-
-        # Check if the required columns exist in the DataFrame
-        if 'latitude' in df.columns and 'longitude' in df.columns and 'chlorophyll' in df.columns:
-            # Calculate the distance of each data point to the buoy
-            df['distance_to_buoy'] = np.sqrt((df['latitude'] - buoy_lat)**2 + (df['longitude'] - buoy_long)**2)
-
-            # Filter data points within the specified radius
-            filtered_df = df[df['distance_to_buoy'] <= radius]
-            chlorophyll_values = filtered_df['chlorophyll'].dropna()
-
-            # If no chlorophyll values are found within the radius, log a message and skip
-            if chlorophyll_values.empty:
-                print(f"No chlorophyll values found near the buoy on {date}.")
-                continue
-
-            # Calculate summary statistics
-            mean_val = chlorophyll_values.mean()  # Mean chlorophyll value
-            median_val = chlorophyll_values.median()  # Median chlorophyll value
-            # Mode chlorophyll value (handles empty mode gracefully)
-            mode_val = chlorophyll_values.mode().iloc[0] if not chlorophyll_values.mode().empty else np.nan
-            pixel_concentration = len(filtered_df)  # Number of pixels within the radius
-
-            # Append the summary data for the current directory
-            summary_data.append({
-                "date": date,  # Date of the data
-                "time": time,  # Time of the data
-                "mean_val": mean_val,  # Mean chlorophyll value
-                "median_val": median_val,  # Median chlorophyll value
-                "mode_val": mode_val,  # Mode chlorophyll value
-                "pixel_concentration": pixel_concentration  # Number of pixels within the radius
-            })
-
-    # Create a DataFrame from the collected summary data
-    summary_df = pd.DataFrame(summary_data)
-
-    # Save the summary DataFrame to a CSV file
-    saved_csv_file_path = os.path.join(products_dir, f"r_{radius}_{output_csv}")
-    summary_df.to_csv(saved_csv_file_path, index=False)
-    print(f"Chlorophyll summary saved to: {saved_csv_file_path}")
-
-    # Return the summary DataFrame
-    return summary_df
-
-def main(
-    longps=-117.31646, 
-    latgps=32.92993, 
-    factor=0.01802, 
-    start_date="2022-01-23", 
-    end_date="2022-01-24", 
-    collection_ids=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], 
-    directory='new_products',  
-    buoy_long=-117.31646, 
-    buoy_lat=32.92993,
-    radii=[1, 0.02, 0.01, 0.005]
-):
-    """
-    Main function to process and summarize chlorophyll data from satellite collections.
-
-    Parameters:
-    - longps (float): Longitude of the ROI center.
-    - latgps (float): Latitude of the ROI center.
-    - factor (float): Offset to define the ROI boundary.
-    - start_date (str): Start date for the product search (ISO format: 'YYYY-MM-DD').
-    - end_date (str): End date for the product search (ISO format: 'YYYY-MM-DD').
-    - collection_ids (list): List of collection IDs to search for data.
-    - directory (str): Directory to save downloaded products and results.
-    - buoy_long (float): Longitude of the buoy (reference point).
-    - buoy_lat (float): Latitude of the buoy (reference point).
-    - radii (list): List of radii (in degrees) for summarization.
-
-    Returns:
-    - None
-    """
-
-    # Load credentials for accessing the datastore
-    credentials_file = os.path.join(os.path.expanduser("~"), '.eumdac', 'credentials')
+    credentials_file = Path.home() / ".eumdac" / "credentials"
     try:
-        credentials = Path(credentials_file).read_text().split(',')
+        credentials = credentials_file.read_text().split(",")
         token = eumdac.AccessToken((credentials[0], credentials[1]))
-        print(f"This token '{token}' expires {token.expiration}")
-    except (FileNotFoundError, IndexError) as e:
-        print("Error loading credentials. Please ensure the credentials file is properly set up.")
+        logging.info(f"Token obtained. Expires on: {token.expiration}")
+    except (FileNotFoundError, IndexError):
+        logging.error("Error loading credentials.")
         return
 
-    # Create a DataStore object using the token
     datastore = eumdac.DataStore(token)
+    download_dir = Path.home() / args.directory
+    download_dir.mkdir(parents=True, exist_ok=True)
 
-    # Define the directory for storing downloaded data
-    download_dir = os.path.join(Path.home(), directory)
+    factor = km_to_degrees(args.factor)
 
-    # Check and create the directory if it doesn't exist
-    if not os.path.exists(download_dir):
-        os.makedirs(download_dir)
-        print(f"Directory created: {download_dir}")
+    # If products are provided via command-line, use them; otherwise, prompt user
+    default = ["chl_nn.nc", "chl_oc4me.nc", "wqsf.nc","geo_coordinates.nc"]
+    if args.products:
+        selected_products = default + [p.strip() for p in args.products.split(",")]
     else:
-        print(f"Using existing directory: {download_dir}")
-
-    # Process chlorophyll data
-    directories = process_chlorophyll_data(
-        datastore, longps, latgps, factor, start_date, end_date, collection_ids, download_dir
+        selected_products = default
+    print(selected_products)
+    
+    process_chlorophyll_data(
+        datastore, args.longps, args.latgps, factor, args.start_date, args.end_date,
+        args.collection_ids, str(download_dir), selected_products
     )
 
-    # Summarize chlorophyll data for each specified radius
-    for rs in radii:
-        print(f"Summarizing chlorophyll data for radius: {rs}")
-        summarize_chlorophyll_data(directories, download_dir, buoy_long, buoy_lat, radius=rs)
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run Harmful Algal Bloom Detection System")
-    
-    parser.add_argument("--longps", type=float, default=-117.31646, help="Longitude of the ROI center")
-    parser.add_argument("--latgps", type=float, default=32.92993, help="Latitude of the ROI center")
-    parser.add_argument("--factor", type=float, default=0.01802, help="Offset to define ROI boundary")
-    parser.add_argument("--start_date", type=str, default="2022-01-23", help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--end_date", type=str, default="2022-01-24", help="End date (YYYY-MM-DD)")
-    parser.add_argument("--collection_ids", nargs="+", default=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], help="Collection IDs to search")
-    parser.add_argument("--directory", type=str, default="productx", help="Directory for outputs")
-    parser.add_argument("--buoy_long", type=float, default=-117.31646, help="Longitude of the buoy")
-    parser.add_argument("--buoy_lat", type=float, default=32.92993, help="Latitude of the buoy")
-    parser.add_argument("--radii", nargs="+", type=float, default=[1, 0.02, 0.01, 0.005], help="Radii for summarization")
+    parser = argparse.ArgumentParser(description="Satellite Chlorophyll Data Processor")
 
+    # Required arguments
+    parser.add_argument("--longps", type=float, default=-117.31646, help="Longitud del ROI")
+    parser.add_argument("--latgps", type=float, default=32.92993, help="Latitud del ROI")
+    parser.add_argument("--factor", type=float, default= 5, help="Factor de expansión del ROI")
+    parser.add_argument("--start_date", type=str, default="2009-01-01", help="Fecha de inicio (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default="2019-01-03", help="Fecha de fin (YYYY-MM-DD)")
+    parser.add_argument("--collection_ids", nargs="+", default=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], help="Colecciones")
+    parser.add_argument("--directory", type=str, default="datos_delmarr_new", help="Directorio de salida")
+    parser.add_argument(
+        "--products",type=str,
+        help="Comma-separated list of products to download. Example: 'geo_coordinates.nc,wqsf.nc,Oa01_reflectance.nc'."
+    )
     args = parser.parse_args()
-    
-    # Pass parsed arguments to the main function
-    main(args.longps, args.latgps, args.factor, args.start_date, args.end_date, args.collection_ids, args.directory, args.buoy_long, args.buoy_lat, args.radii)
+    main(args)
