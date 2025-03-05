@@ -61,7 +61,7 @@ python chll_nn.py \
 | `--start_date`  | Start date for satellite data retrieval                  | `2009-01-01` |
 | `--end_date`    | End date for satellite data retrieval                    | `2019-01-03` |
 | `--collection_ids` | Satellite dataset IDs from Copernicus API             | `EO:EUM:DAT:0407` |
-| `--directory`   | Output directory for storing results                     | `datos_delmarr_new` |
+| `--directory`   | Output directory for storing results                     | `datos_SanJose` |
 | `--products`    | Comma-separated list of additional products to download  | `geo_coordinates.nc,wqsf.nc,Oa01_reflectance.nc` |
 
 
