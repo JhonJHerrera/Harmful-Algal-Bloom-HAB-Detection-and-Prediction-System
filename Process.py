@@ -24,7 +24,7 @@ def load_variable_names(var_list_file):
         return variables
     else:
         print(f"Warning: {var_list_file} not found. Using default variables.")
-        return ['chlorophyll','chlorophyll_oc4me']  
+        return ['CHL_NN']  
 
 def summarize_chlorophyll_data(columns, directories_list_file, products_dir, buoy_long=-117.31646, buoy_lat=32.92993, radius=0.01, output_csv_prefix="chlorophyll_summary"):
     """
@@ -126,18 +126,14 @@ def summarize_chlorophyll_data(columns, directories_list_file, products_dir, buo
 
     return summary_dfs
 
-def km_to_degrees(km):
-    return km / 111.32
-
 def main(
     var_list_file="var_names.txt",
-    buoy_long=-66.23858, 
-    buoy_lat=17.94306,
-    radii=[0.5],
-    download_dirct="JBNERR"
+    buoy_long=-117.31646, 
+    buoy_lat=32.92993,
+    radii=[0.02],
+    download_dirct="datos_delmarr_new"
 ):
-    
-    """Job20
+    """
     Main function to process and summarize chlorophyll data from satellite collections.
 
     Parameters:
@@ -175,9 +171,8 @@ def main(
 
     # Summarize data for each radius
     for rs in radii:
-        km = km_to_degrees(rs)
-        print(f"Summarizing data for radius: {km}")
-        summarize_chlorophyll_data(columns, directories_list_file, download_dir, buoy_long, buoy_lat, radius=km)
+        print(f"Summarizing data for radius: {rs}")
+        summarize_chlorophyll_data(columns, directories_list_file, download_dir, buoy_long, buoy_lat, radius=rs)
 
 if __name__ == "__main__":
     main()
