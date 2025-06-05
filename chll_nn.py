@@ -11,6 +11,8 @@ import numpy as np
 from shapely import geometry
 import time
 import pandas as pd
+from shapely.geometry import Polygon
+import xml.etree.ElementTree as ET
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -48,7 +50,34 @@ def process_chlorophyll_data(datastore, longps, latgps, factor, start_date, end_
                   (longps - factor, latgps - factor),
                   (longps + factor, latgps - factor),
                   (longps + factor, latgps + factor)]
+    roi_polygon = Polygon(roi_coords)
     roi_wkt = "POLYGON((" + ", ".join([f"{lon} {lat}" for lon, lat in roi_coords]) + "))"
+
+    # Attempt to read a custom masking polygon from a KML file
+    kml_path = os.path.join(os.getcwd(), "Polygon", "masking.kml")
+    if os.path.isfile(kml_path):
+        with open(kml_path, 'r', encoding='utf-8') as file:
+            kml_content = file.read()
+        namespace = {'kml': 'http://www.opengis.net/kml/2.2'}
+        root = ET.fromstring(kml_content)
+        coords_text = None
+        for placemark in root.findall(".//kml:Placemark", namespace):
+            polygon = placemark.find(".//kml:Polygon", namespace)
+            if polygon is not None:
+                coords_element = polygon.find(".//kml:coordinates", namespace)
+                if coords_element is not None:
+                    coords_text = coords_element.text.strip()
+                    break
+        if coords_text:
+            coords = []
+            for coord in coords_text.split():
+                lon, lat, *_ = map(float, coord.split(','))
+                coords.append((lon, lat))
+            kml_polygon = Polygon(coords)
+        else:
+            print("No valid polygon found in the KML file.")
+    else:
+        print("KML file not found. Using default square ROI.")
 
     for collection_id in collection_ids:
         selected_collection = datastore.get_collection(collection_id)
@@ -138,7 +167,12 @@ def process_chlorophyll_data(datastore, longps, latgps, factor, start_date, end_
                     "longitude": lon[point_mask],
                     "datetime": datetime_obj  # This adds the same datetime to all rows
                 })
-
+                
+                if 'kml_polygon' in locals() and isinstance(kml_polygon, Polygon):
+                    df['inside_kml'] = [kml_polygon.contains(geometry.Point(lon, lat)) for lon, lat in zip(df['longitude'], df['latitude'])]
+                    df = df[df['inside_kml']].drop(columns='inside_kml')
+                else:
+                    print("KML polygon is not fully contained within the square ROI.")
 
                 # Process WQSF Flags
                 if flag_path:
@@ -252,16 +286,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Satellite Chlorophyll Data Processor")
 
     # Required arguments
-    parser.add_argument("--longps", type=float, default=-117.31646, help="Longitud del ROI")
-    parser.add_argument("--latgps", type=float, default=32.92993, help="Latitud del ROI")
-    parser.add_argument("--factor", type=float, default= 5, help="Factor de expansión del ROI")
-    parser.add_argument("--start_date", type=str, default="2009-01-01", help="Fecha de inicio (YYYY-MM-DD)")
-    parser.add_argument("--end_date", type=str, default="2019-01-03", help="Fecha de fin (YYYY-MM-DD)")
+    parser.add_argument("--longps", type=float, default=-66.025, help="Longitud del ROI")
+    parser.add_argument("--latgps", type=float, default=18.425, help="Latitud del ROI")
+    parser.add_argument("--factor", type=float, default=5, help="Factor de expansión del ROI")
+    parser.add_argument("--start_date", type=str, default="2019-01-04", help="Fecha de inicio (YYYY-MM-DD)")
+    parser.add_argument("--end_date", type=str, default="2025-06-01", help="Fecha de fin (YYYY-MM-DD)")
     parser.add_argument("--collection_ids", nargs="+", default=["EO:EUM:DAT:0407", "EO:EUM:DAT:0556"], help="Colecciones")
-    parser.add_argument("--directory", type=str, default="datos_delmarr_new", help="Directorio de salida")
-    parser.add_argument(
-        "--products",type=str,
-        help="Comma-separated list of products to download. Example: 'geo_coordinates.nc,wqsf.nc,Oa01_reflectance.nc'."
-    )
+    parser.add_argument("--directory", type=str, default="SanJose_new", help="Directorio de salida")
+    parser.add_argument("--products",type=str, default="iop_lsd.nc,iop_nn.nc,iwv.nc,Oa01_reflectance.nc,Oa02_reflectance.nc,Oa03_reflectance.nc,Oa04_reflectance.nc,Oa05_reflectance.nc,Oa06_reflectance.nc,Oa07_reflectance.nc,Oa08_reflectance.nc,Oa09_reflectance.nc,Oa10_reflectance.nc,Oa11_reflectance.nc,Oa12_reflectance.nc,Oa16_reflectance.nc,Oa17_reflectance.nc,Oa18_reflectance.nc,Oa21_reflectance.nc,par.nc,tie_geo_coordinates.nc,tie_meteo.nc,time_coordinates.nc,trsp.nc,tsm_nn.nc,w_aer.nc", 
+                        help="Comma-separated list of products to download. Example: 'geo_coordinates.nc,wqsf.nc,Oa01_reflectance.nc'.")
     args = parser.parse_args()
     main(args)
