@@ -2,6 +2,14 @@
 
 This project aims to develop an **early warning system for Harmful Algal Blooms (HABs)** in **San José Lagoon, San Juan, Puerto Rico**. The lagoon frequently experiences **toxic cyanobacterial blooms**, which deplete oxygen levels, harm aquatic life, and negatively impact local recreation and the economy.
 
+This project is a complete **early warning system** for Harmful Algal Blooms (HABs) in **San José Lagoon, Puerto Rico**. It includes:
+
+1. **Data Pipeline:** Automatically retrieves and processes Sentinel-3 satellite data using the EUMETSAT API.
+2. **Prediction Module:** Uses machine learning models like XGBoost to predict the likelihood of HABs 7 to 15 days in advance.
+3. **Evaluation Tools:** Generates reports and plots (confusion matrix, accuracy, etc.) to assess model performance.
+
+---
+## 1 **Data Pipeline:** 
 This tool **automates satellite data retrieval, processing, and analysis** to detect HABs using geospatial techniques. It integrates real-time satellite data from the **Copernicus Data Store (EUMETSAT API)** and generates CSV summaries of chlorophyll concentrations.
 
 - **Primary focus area:** San José Lagoon, Puerto Rico *(can be customized)*  
@@ -124,3 +132,27 @@ Contributions are welcome! Feel free to:
 - Fork the repo and experiment with **new features**  
 
 ---
+## 2 **Prediction Module:** 
+
+### (XGBoost)
+
+We currently support two forecast horizons:
+
+- **7-day forecast (`t+7`)**
+- **15-day forecast (`t+15`)**
+
+Each model is trained to classify future HAB risk based on chlorophyll concentration:
+- `'Low'` if CHL_NN < 12
+- `'High'` otherwise
+
+### To Run a Prediction
+```bash
+python main.py
+
+### To Run a Prediction
+
+test_result/
+└── 7d_report/
+    ├── metrics_7d.pdf
+    ├── plots_7d.pdf
+    └── metrics_array_7d.npy
