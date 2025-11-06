@@ -17,7 +17,6 @@ from __future__ import annotations
 
 # ---------------------------- Imports ----------------------------
 import argparse
-import json
 import logging
 import os
 import sys
@@ -38,13 +37,13 @@ except Exception:
 import numpy as np
 import pandas as pd
 
-# Prefer joblib; fall back to pickle if unavailable
+import json as _json
+import pickle
 try:
-    import joblib  # type: ignore
-    _HAVE_JOBLIB = True
+    import joblib as _joblib_reader
 except Exception:
-    import pickle
-    _HAVE_JOBLIB = False
+    _joblib_reader = None
+import pickle as _pickle_reader
 
 # ---------------------------- Constants ----------------------------
 WINDOWS  = (7, 14, 30, 60)
@@ -67,6 +66,120 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("predict")
 
 # ---------------------------- Model I/O ----------------------------
+import glob
+import json as _json
+try:
+    import joblib as _joblib_reader
+except Exception:
+    _joblib_reader = None
+import pickle as _pickle_reader
+
+def _resolve_input(path: str) -> str:
+    # exact path first
+    if os.path.exists(path):
+        return path
+    # common fallbacks
+    candidates = [
+        "src/pipeline/final_data/SJL_daily_df.csv",
+        "src/final_data/SJL_daily_df.csv",
+        "src/data/final_data/SJL_daily_df.csv",
+        "src/pipeline/final_data/SJL_daily.csv",
+        "src/final_data/SJL_daily.csv",
+        "src/data/final_data/SJL_daily.csv",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            log.warning(f"Input not found: {path} -> using {c}")
+            return c
+    raise FileNotFoundError(f"Input CSV not found: {path}")
+
+def _read_feature_list_file(path: str) -> list[str] | None:
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        if ext == ".json":
+            with open(path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if isinstance(data, dict):
+                for k in ("features","feature_list","feature_names","columns"):
+                    if k in data and isinstance(data[k], list):
+                        return [str(x) for x in data[k]]
+            if isinstance(data, list):
+                return [str(x) for x in data]
+        elif ext == ".txt":
+            return [ln.strip() for ln in open(path, "r", encoding="utf-8") if ln.strip()]
+        elif ext in {".joblib", ".pkl", ".sav"}:
+            obj = None
+            if ext == ".joblib" and _joblib_reader is not None:
+                obj = _joblib_reader.load(path)
+            else:
+                with open(path, "rb") as f:
+                    obj = _pickle_reader.load(f)
+            if isinstance(obj, (list, tuple)):
+                return [str(x) for x in obj]
+            if isinstance(obj, dict):
+                for k in ("features","feature_list","feature_names","columns"):
+                    if k in obj and isinstance(obj[k], (list, tuple)):
+                        return [str(x) for x in obj[k]]
+    except Exception:
+        pass
+    return None
+
+def _find_features_in_model_dir(model_path: str) -> list[str] | None:
+    model_dir = os.path.dirname(model_path)
+    # prioridad alta por nombres comunes
+    candidates = [
+        "features.json", "training_features.json",
+        "feature_names.json", "columns.json",
+        "features.txt", "feature_names.txt", "columns.txt",
+        "features.joblib", "feature_names.joblib", "columns.joblib",
+        "features.pkl", "feature_names.pkl", "columns.pkl",
+    ]
+    for name in candidates:
+        p = os.path.join(model_dir, name)
+        if os.path.exists(p):
+            lst = _read_feature_list_file(p)
+            if lst: return lst
+    # como último intento, cualquier *features*.* en el dir
+    for p in sorted(glob.glob(os.path.join(model_dir, "*features*.*"))):
+        lst = _read_feature_list_file(p)
+        if lst: return lst
+    return None
+
+def _resolve_expected_features(model_obj, estimator, model_path: str, cli_features_json: str | None) -> list[str]:
+    """
+    Precedencia:
+      1) Dentro del bundle (dict): keys ['features','feature_list','feature_names','columns'].
+      2) Archivo(s) vecino(s) en la carpeta del modelo (features.json/txt/joblib/pkl...).
+      3) Atributo estimator.feature_names_in_ (si existe).
+      4) JSON global pasado por CLI (fallback).
+    """
+    # 1) bundle dict
+    if isinstance(model_obj, dict):
+        for k in ("features","feature_list","feature_names","columns"):
+            if k in model_obj and isinstance(model_obj[k], (list, tuple)):
+                return [str(x) for x in model_obj[k]]
+
+    # 2) files in model folder
+    lst = _find_features_in_model_dir(model_path)
+    if lst: return lst
+
+    # 3) feature_names_in_
+    names = getattr(estimator, "feature_names_in_", None)
+    if names is not None:
+        return [str(x) for x in list(names)]
+
+    # 4) CLI JSON
+    if cli_features_json and os.path.exists(cli_features_json):
+        loaded = _read_feature_list_file(cli_features_json)
+        if loaded:
+            return loaded
+
+    raise RuntimeError(
+        "Could not determine the training feature list. "
+        "Please add 'features.json' (or similar) next to the model, "
+        "or bundle it inside the joblib/pkl under key 'features'."
+    )
+
 def load_model(path: str):
     if not os.path.exists(path):
         raise FileNotFoundError(f"Model file not found: {path}")
@@ -82,8 +195,8 @@ def load_model(path: str):
         return bst
 
     # sklearn/joblib/pickle
-    if _HAVE_JOBLIB:
-        return joblib.load(path)  # may return estimator or dict-bundle
+    if _joblib_reader is not None:
+        return _joblib_reader.load(path)  # may return estimator or dict-bundle
     with open(path, "rb") as f:
         return pickle.load(f)
 
@@ -303,7 +416,7 @@ def _rolling_feats_shifted(df, cols, windows=WINDOWS, min_frac=MIN_FRAC, prefix=
     return out
 
 # ---------------------------- Build features ----------------------------
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, expected: Optional[Sequence[str]] = None) -> pd.DataFrame:
     """
     1) Safe date parsing for 'datetime'/'date'.
     2) Builds weekly-smoothed CHL_NN_total -> CHL_W without leakage (ffill + shift(1)).
@@ -365,12 +478,12 @@ def load_feature_list(path: Optional[str]) -> Optional[List[str]]:
     if not os.path.exists(path):
         raise FileNotFoundError(f"--features-json not found: {path}")
     with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+        data = _json.load(f)   # <- use _json here
     if isinstance(data, dict) and "features" in data:
         data = data["features"]
     if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
         raise ValueError("features JSON must be a list of column names or {'features': [...]} ")
-    return data  # type: ignore[return-value]
+    return data
 
 def align_columns(X: pd.DataFrame, expected: Sequence[str]) -> pd.DataFrame:
     X = X.copy()
@@ -424,19 +537,17 @@ def run_all_models(
 
     for d in subdirs:
         model_dir = os.path.join(models_root, d)
-        model_pkl = os.path.join(model_dir, "model.pkl")
-        if not os.path.exists(model_pkl):
-            log.warning(f"Skipping '{model_dir}' (missing model.pkl)")
+        try:
+            model_file = find_model_file(model_dir)  # picks model.pkl / *.joblib / *.pkl / *.json
+        except FileNotFoundError:
+            log.warning(f"Skipping '{model_dir}' (no model file found)")
             continue
 
-        H = _extract_h_from_dirname(d)  # may be None, we handle it
+        H = _extract_h_from_dirname(d)
         try:
-            # scratch output for the underlying single-model run
             scratch_out = os.path.join(results_dir, f"_{algo_name}_{d}_scratch.csv")
-
-            # run single-model prediction (returns float if exactly one row)
             y_value = run_prediction(
-                model_path=model_pkl,
+                model_path=model_file,
                 input_csv=input_csv,
                 output_csv=scratch_out,
                 id_cols=["date"],
@@ -449,7 +560,6 @@ def run_all_models(
                 tz=tz,
             )
 
-            # Assemble compact result row
             as_of_date = _to_local_date(predict_date, tz)
             predicted_date = (as_of_date + timedelta(days=H)) if H is not None else None
             label = _label_from_thresholds(float(y_value), q1, q2)
@@ -464,16 +574,13 @@ def run_all_models(
                 "model_dir": model_dir,
             }
 
-            # Write one-row CSV per model
-            out_path = os.path.join(
-                results_dir,
-                f"{algo_name}_{d}_{run_date.isoformat()}.csv"
-            )
+            out_path = os.path.join(results_dir, f"{algo_name}_{d}_{run_date.isoformat()}.csv")
             pd.DataFrame([row]).to_csv(out_path, index=False)
             log.info(f"Wrote: {out_path}")
 
         except Exception as e:
             log.exception(f"Failed running model at {model_dir}: {e}")
+
 
 
 def run_prediction(
@@ -485,39 +592,38 @@ def run_prediction(
     prediction_col: str = "y_pred",
     save_x_used: Optional[str] = None,
     nrows: Optional[int] = None,
-    # date controls
     predict_date: Optional[str] = None,      # "YYYY-MM-DD" or None => local yesterday
     predict_strict_one: bool = False,
     date_col: Optional[str] = None,
     tz: str = "America/Puerto_Rico",
 ):
-    # 1) Load
+    # 1) Load data (robust path resolution)
+    input_csv = _resolve_input(input_csv)
     log.info(f"Reading CSV: {input_csv}")
     df_raw = pd.read_csv(input_csv, nrows=nrows)
     log.info(f"Raw shape: {df_raw.shape}")
 
-    # 1.1) Ensure 'yesterday' row (simple per-column last non-NaN)
+    # 1.1) Ensure there's a 'yesterday' row (no leakage)
     df_raw = ensure_yday_with_last_values(
         df_raw,
         date_col=(date_col or "date"),
         tz=tz,
     )
 
-    # 2) Build features
-    X = build_features(df_raw)
-    log.info(f"Shape after feature build: {X.shape}")
-
-    # 3) Load model
+    # 2) Load model and resolve expected features
     model = load_model(model_path)
     estimator, preproc = unwrap_model_bundle(model)
     log.info(f"Estimator type: {type(estimator)}; Preproc: {type(preproc) if preproc is not None else None}")
 
-    # 4) Align to training columns
-    expected = load_feature_list(features_json) or infer_expected_features_from_model(model)
-    X_aligned = align_columns(X, expected) if expected is not None else X
+    expected = _resolve_expected_features(model, estimator, model_path, features_json)
+
+    # 3) Build features (full set), then align strictly to training features
+    X = build_features(df_raw, expected=expected)  # accepted but currently ignored inside
+    log.info(f"Shape after feature build: {X.shape}")
+    X_aligned = align_columns(X, expected)
     log.info(f"Shape used for prediction: {X_aligned.shape}")
 
-    # 4.1) Select exact date rows
+    # 4) Select exact date rows using the raw df (it has 'date')
     df_ids, chosen_date_col = _coerce_date_col(df_raw, date_col)
     target_date = _to_local_date(predict_date, tz)  # defaults to local yesterday
     idx_for_date = _select_rows_for_exact_date(df_ids, chosen_date_col, target_date)
@@ -527,15 +633,15 @@ def run_prediction(
     if predict_strict_one and len(idx_for_date) != 1:
         raise ValueError(f"Expected exactly 1 row for {target_date}, but found {len(idx_for_date)}.")
 
-    # Subset
+    # 5) Subset for prediction
     X_pred  = X_aligned.loc[idx_for_date]
     ids_pred = df_raw.loc[idx_for_date]
     log.info(f"Predicting for date={target_date} rows={len(X_pred)}")
 
-    # 5) Predict
+    # 6) Predict (sklearn estimator or xgboost Booster; apply scaler if bundled)
     yhat, proba = predict_any(estimator, X_pred, preproc=preproc)
 
-    # 6) Output frame
+    # 7) Build output (only that date)
     out = pd.DataFrame(index=X_pred.index)
     if id_cols:
         missing = [c for c in id_cols if c not in ids_pred.columns]
@@ -549,14 +655,15 @@ def run_prediction(
         for k in range(n_classes):
             out[f"{prediction_col}_proba_{k}"] = proba[:, k]
 
-    # 7) Write outputs
+    # 8) Write outputs
     os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
     out.to_csv(output_csv, index=False)
     log.info(f"Predictions saved to: {output_csv} (rows={len(out)})")
 
+    # 9) (Optional) Save features actually used for traceability
     if save_x_used:
         ext = os.path.splitext(save_x_used)[1].lower()
-        to_save = X_pred  # features actually used
+        to_save = X_pred
         os.makedirs(os.path.dirname(save_x_used) or ".", exist_ok=True)
         if ext == ".parquet":
             to_save.to_parquet(save_x_used, index=False)
@@ -564,7 +671,7 @@ def run_prediction(
             to_save.to_csv(save_x_used, index=False)
         log.info(f"Saved features used to: {save_x_used}")
 
-    # 8) Return
+    # 10) Return a scalar or dict
     if len(yhat) == 1:
         y_value = float(yhat[0])
         print(f"{prediction_col}({target_date}) = {y_value}")
@@ -573,6 +680,7 @@ def run_prediction(
         result = {int(i): float(v) for i, v in zip(out.index, yhat)}
         print(f"{prediction_col}({target_date}) = {result}")
         return result
+
 
 # ---------------------------- CLI ----------------------------
 # --- in parse_args() ---
@@ -587,7 +695,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Run all models under this folder (default: models/xgboost).")
     p.add_argument("--input", default="src/pipeline/final_data/SJL_daily_df.csv",
                    help="Input CSV (default: src/pipeline/final_data/SJL_daily_df.csv).")
-    p.add_argument("--features-json", default="src/features/training_features.json",
+    p.add_argument("--features-json", default=None,
                    help="Training feature list JSON (default: src/features/training_features.json).")
     p.add_argument("--results-dir", default="results",
                    help="Where to write per-model CSVs (default: results/).")
