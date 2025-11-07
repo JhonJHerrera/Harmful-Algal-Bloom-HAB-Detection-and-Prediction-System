@@ -1,17 +1,5 @@
-
-*.csv
-chll_nn copy.py
-mean_chll.py
-mean_chll.py
-mean_chll copy.py
-.DS_Store
-.ipynb_checkpoints
-chll_nn_all_prod.py
-chll_nn_flags.py
-ieee.py
-new.py
-salida.txt
-nohup.out
 /src/pipeline/data/chl_data
 src/pipeline/final_data/gold_state.json
 /utils/__pycache__
+.DS_Store
+.ipynb_checkpoints/create-auth-file-checkpoint.ipynb

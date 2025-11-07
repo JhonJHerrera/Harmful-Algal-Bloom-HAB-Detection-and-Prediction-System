@@ -1,0 +1,2 @@
+run_date,as_of_date,horizon_days,predicted_date,y_pred,label,model_dir
+2025-11-07,2025-11-06,7,2025-11-13,12.59823221451438,medium,models/xgboost/7d
