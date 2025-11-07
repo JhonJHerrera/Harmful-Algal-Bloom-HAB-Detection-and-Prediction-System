@@ -26,11 +26,11 @@ DEFAULT_DATASET = "GHCND"
 DEFAULT_STATION = "GHCND:RQW00011641"  # SJU TJSJ
 DEFAULT_DTYPES = ["TMAX", "TMIN", "PRCP", "AWND", "WSF2"]
 
-DEFAULT_OUTPUT_DIR = "data/ncei_data"
-DEFAULT_FINAL_CSV = "data/ncei_data/ncei_data.csv"  # <- final “safe upsert” CSV
+DEFAULT_OUTPUT_DIR = "src/pipeline/data/ncei_data"
+DEFAULT_FINAL_CSV = "src/pipeline/data/ncei_data/ncei_data.csv"  # <- final “safe upsert” CSV
 
 # Processed log
-DEFAULT_LOG_DIR = "logs"
+DEFAULT_LOG_DIR = "src/pipeline/logs"
 DEFAULT_LOG_CSV = "ncei_processed_log.csv"
 DEFAULT_RUNLOG_NAME = "ncei_downloader.log"
 

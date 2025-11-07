@@ -74,24 +74,6 @@ except Exception:
     _joblib_reader = None
 import pickle as _pickle_reader
 
-def _resolve_input(path: str) -> str:
-    # exact path first
-    if os.path.exists(path):
-        return path
-    # common fallbacks
-    candidates = [
-        "src/pipeline/final_data/SJL_daily_df.csv",
-        "src/final_data/SJL_daily_df.csv",
-        "src/data/final_data/SJL_daily_df.csv",
-        "src/pipeline/final_data/SJL_daily.csv",
-        "src/final_data/SJL_daily.csv",
-        "src/data/final_data/SJL_daily.csv",
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            log.warning(f"Input not found: {path} -> using {c}")
-            return c
-    raise FileNotFoundError(f"Input CSV not found: {path}")
 
 def _read_feature_list_file(path: str) -> list[str] | None:
     ext = os.path.splitext(path)[1].lower()
@@ -515,6 +497,7 @@ def run_all_models(
     predict_date: Optional[str],
     q1: float,
     q2: float,
+    keep_scratch: bool = False
 ) -> None:
     """
     Iterate subfolders in models_root (e.g., models/xgboost/7d, 15d),
@@ -581,6 +564,11 @@ def run_all_models(
         except Exception as e:
             log.exception(f"Failed running model at {model_dir}: {e}")
 
+        if not keep_scratch and os.path.exists(scratch_out):
+            try:
+                os.remove(scratch_out)
+            except Exception as e:
+                log.warning(f"Could not remove scratch file {scratch_out}: {e}")
 
 
 def run_prediction(
@@ -598,10 +586,16 @@ def run_prediction(
     tz: str = "America/Puerto_Rico",
 ):
     # 1) Load data (robust path resolution)
-    input_csv = _resolve_input(input_csv)
     log.info(f"Reading CSV: {input_csv}")
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(
+            f"Input CSV not found: {input_csv}. "
+            "Pass --input with a valid path (e.g., src/pipeline/final_data/SJL_daily_df.csv) "
+            "or run from the repo root."
+        )
     df_raw = pd.read_csv(input_csv, nrows=nrows)
     log.info(f"Raw shape: {df_raw.shape}")
+
 
     # 1.1) Ensure there's a 'yesterday' row (no leakage)
     df_raw = ensure_yday_with_last_values(
@@ -685,43 +679,39 @@ def run_prediction(
 # ---------------------------- CLI ----------------------------
 # --- in parse_args() ---
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Load a model, rebuild features, and predict on a CSV.")
+    p = argparse.ArgumentParser(description="Batch predict all models in a root folder (single-run optional).")
 
-    # Single-run (still optional; batch is default)
-    p.add_argument("--model", default=None, help="Path to .pkl/.joblib model (single-run).")
+    # ---- Single-run (opcional; por defecto usas batch) ----
+    p.add_argument("--model", default=None,
+                   help="Path to a single .pkl/.joblib/.json model. If provided, runs single-model mode.")
+    p.add_argument("--output", default=None,
+                   help="Output CSV for single-run mode (required if --model is used).")
 
-    # Defaults you asked for:
+    # ---- Batch (por defecto) ----
     p.add_argument("--batch-models-root", default="models/xgboost",
-                   help="Run all models under this folder (default: models/xgboost).")
+                   help="Folder with model subfolders (default: models/xgboost).")
     p.add_argument("--input", default="src/pipeline/final_data/SJL_daily_df.csv",
                    help="Input CSV (default: src/pipeline/final_data/SJL_daily_df.csv).")
-    p.add_argument("--features-json", default=None,
-                   help="Training feature list JSON (default: src/features/training_features.json).")
     p.add_argument("--results-dir", default="results",
                    help="Where to write per-model CSVs (default: results/).")
 
-    # Common options
-    p.add_argument("--output", default=None,
-                   help="Output CSV for single-run mode (ignored in batch).")
-    p.add_argument("--id-cols", nargs="*", default=None, help="Columns to keep in the output.")
-    p.add_argument("--prediction-col", default="y_pred", help="Name of the prediction column.")
-    p.add_argument("--save-x-used", default=None, help="Save features actually used (CSV/Parquet).")
-    p.add_argument("--nrows", type=int, default=None, help="Read only first N rows (debug).")
-
-    # Thresholds (your defaults)
+    # Etiquetado
     p.add_argument("--q1", type=float, default=10.148629867177084,
-                   help="Lower threshold for labeling (default: 10.148629867177084).")
+                   help="Lower threshold for label (default: Q1).")
     p.add_argument("--q2", type=float, default=15.377913418040292,
-                   help="Upper threshold for labeling (default: 15.377913418040292).")
+                   help="Upper threshold for label (default: Q2).")
 
-    # Date / TZ
-    p.add_argument("--date-col", default=None, help="Name of the date column (defaults to 'date' or 'datetime').")
-    p.add_argument("--tz", default="America/Puerto_Rico", help="IANA TZ for 'yesterday'.")
-    p.add_argument("--predict-date", default=None, help="YYYY-MM-DD for target date (default: yesterday).")
+    # Fecha / zona horaria
+    p.add_argument("--tz", default="America/Puerto_Rico",
+                   help="IANA timezone for 'yesterday' (default: America/Puerto_Rico).")
+    p.add_argument("--predict-date", default=None,
+                   help="YYYY-MM-DD; default = local yesterday.")
 
-    # Default TRUE using BooleanOptionalAction so user can disable with --no-predict-strict-one
+    # Comportamiento
     p.add_argument("--predict-strict-one", action=argparse.BooleanOptionalAction, default=True,
                    help="Require exactly one row for the prediction date (default: True).")
+    p.add_argument("--keep-scratch", action=argparse.BooleanOptionalAction, default=False,
+                   help="Keep per-model scratch CSV generated internally (default: False).")
 
     return p.parse_args(argv)
 
@@ -730,39 +720,35 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    # Batch is the default path (uses defaults above). User can still pass --model for single run.
-    if args.batch_models_root:
+    # ---- Batch (por defecto) ----
+    if args.batch_models_root and not args.model:
         run_all_models(
             models_root=args.batch_models_root,
             input_csv=args.input,
             results_dir=args.results_dir,
-            features_json=args.features_json,
+            features_json=None,           # ya priorizamos features en carpeta/bundle
             tz=args.tz,
             predict_date=args.predict_date,
             q1=args.q1,
             q2=args.q2,
+            keep_scratch=args.keep_scratch,
         )
         return
 
-    # Single-model fallback (only if --model is provided)
+    # ---- Single-run (solo si pasas --model) ----
     if not args.model:
-        raise SystemExit("No --model given and no --batch-models-root set. (Batch is default; did you remove it?)")
+        raise SystemExit("No --model provided and batch root present. Run batch (default) or pass --model for single-run.")
 
     if not args.output:
-        raise SystemExit("For single-run mode, please provide --output.")
+        raise SystemExit("Single-run mode requires --output.")
 
     run_prediction(
         model_path=args.model,
         input_csv=args.input,
         output_csv=args.output,
-        id_cols=args.id_cols,
-        features_json=args.features_json,
-        prediction_col=args.prediction_col,
-        save_x_used=args.save_x_used,
-        nrows=args.nrows,
+        features_json=None,              # features salen del bundle/carpeta del modelo
         predict_date=args.predict_date,
         predict_strict_one=args.predict_strict_one,
-        date_col=args.date_col,
         tz=args.tz,
     )
 

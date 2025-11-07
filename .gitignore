@@ -12,3 +12,6 @@ ieee.py
 new.py
 salida.txt
 nohup.out
+/src/pipeline/data/chl_data
+src/pipeline/final_data/gold_state.json
+/utils/__pycache__

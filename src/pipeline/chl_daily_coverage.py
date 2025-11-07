@@ -28,13 +28,13 @@ log = logging.getLogger("chl-daily-coverage")
 # Defaults: your three reference points (lat, lon)
 # ---------------------------------------------------------------------
 # I/O
-DEFAULT_IN_DIR  = "data/chl_data"
-DEFAULT_POLYGON = "polygon/LSJmasking.kml"
+DEFAULT_IN_DIR  = "src/pipeline/data/chl_data"
+DEFAULT_POLYGON = "src/pipeline/polygon/LSJmasking.kml"
 
-DEFAULT_OUT_DIR = "data/chl_total"
+DEFAULT_OUT_DIR = "src/pipeline/data/chl_total"
 DEFAULT_OUT_FILE = os.path.join(DEFAULT_OUT_DIR, "chl_daily.csv")
 
-DEFAULT_LOGS_DIR = os.path.join("logs")
+DEFAULT_LOGS_DIR = os.path.join("src/pipeline/logs")
 FILES_LOG = os.path.join(DEFAULT_LOGS_DIR, "coverage_files_log.csv")
 DAILY_LOG = os.path.join(DEFAULT_LOGS_DIR, "coverage_daily_log.csv")
 

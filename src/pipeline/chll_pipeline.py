@@ -7,7 +7,7 @@ import time
 import argparse
 import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date, timezone, timedelta
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -35,11 +35,11 @@ def add_file_logger(log_dir: str, filename: str = "chlorophyll_pipeline.log", le
 # ---------------------------------------------------------------------
 # Defaults / Constants
 # ---------------------------------------------------------------------
-DEFAULT_OUT_DIR = "data/chl_data"
-DEFAULT_LOG_DIR = "logs"
+DEFAULT_OUT_DIR = "src/pipeline/data/chl_data"
+DEFAULT_LOG_DIR = "src/pipeline/logs"
 DEFAULT_LOG_CSV = "chl_processed_log.csv"
-DEFAULT_POINTS_CSV = "data/chl_data/chl_points.csv"
-DEFAULT_DAILY_CSV = "data/chl_data/chl_daily.csv"
+DEFAULT_POINTS_CSV = "src/pipeline/data/chl_data/chl_points.csv"
+DEFAULT_DAILY_CSV = "src/pipeline/data/chl_data/chl_daily.csv"
 
 DEFAULT_PRODUCT_PATTERNS = [
     "chl_nn", "oa08_reflectance", "oa11_reflectance", "oa17_reflectance",
@@ -62,6 +62,9 @@ RETRY_DELAY_MAX = 60   # seconds
 # ---------------------------------------------------------------------
 # Utils
 # ---------------------------------------------------------------------
+def yesterday_utc() -> date:
+    return (datetime.now(timezone.utc).date() - timedelta(days=1))
+
 def now_utc_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -216,74 +219,6 @@ def find_any(file_map: dict, *candidates: str) -> Optional[str]:
         if v:
             return v
     return None
-
-# # ---------------------------------------------------------------------
-# # Combined points & daily aggregates
-# # ---------------------------------------------------------------------
-# def append_points(df: pd.DataFrame, points_csv: str) -> int:
-#     if df.empty:
-#         return 0
-#     ensure_dir(os.path.dirname(points_csv))
-#     write_header = not os.path.exists(points_csv)
-#     df.to_csv(points_csv, mode="a", index=False, header=write_header)
-#     return len(df)
-
-# def dedupe_sort_points(points_csv: str) -> None:
-#     if not os.path.exists(points_csv):
-#         return
-#     try:
-#         df = pd.read_csv(points_csv, parse_dates=["datetime"])
-#         if df.empty:
-#             return
-#         df = df.drop_duplicates(subset=["datetime", "latitude", "longitude"], keep="last")
-#         df = df.sort_values("datetime").reset_index(drop=True)
-#         df.to_csv(points_csv, index=False)
-#         logger.info(f"De-duplicated & sorted points CSV: {points_csv}")
-#     except Exception as e:
-#         logger.warning(f"Could not de-dup/sort {points_csv}: {e}")
-
-# def write_daily_aggregates(points_csv: str, out_csv: str, stats: List[str]) -> Optional[str]:
-#     if not os.path.exists(points_csv):
-#         logger.warning(f"Points CSV not found: {points_csv}")
-#         return None
-#     df = pd.read_csv(points_csv, parse_dates=["datetime"])
-#     if df.empty:
-#         logger.warning(f"Points CSV is empty: {points_csv}")
-#         return None
-
-#     # Choose numeric variable columns (exclude coords/flags if desired)
-#     non_vars = {"datetime", "latitude", "longitude"}
-#     num_cols = [c for c in df.columns if c not in non_vars and pd.api.types.is_numeric_dtype(df[c])]
-#     if not num_cols:
-#         logger.warning("No numeric variable columns to aggregate.")
-#         return None
-
-#     df["date"] = df["datetime"].dt.date
-#     grp = df.groupby("date")[num_cols].agg(stats)
-
-#     # Flatten MultiIndex columns: var_stat
-#     if isinstance(grp.columns, pd.MultiIndex):
-#         grp.columns = [f"{v}_{s}" for v, s in grp.columns]
-#     grp = grp.reset_index().sort_values("date")
-#     ensure_dir(os.path.dirname(out_csv))
-#     grp.to_csv(out_csv, index=False)
-#     logger.info(f"Wrote daily aggregates ({','.join(stats)}) to {out_csv} (rows={len(grp)})")
-#     return out_csv
-
-# def cleanup_scene_csvs(out_dir: str) -> int:
-#     cnt = 0
-#     for name in os.listdir(out_dir):
-#         if name.endswith(".csv") and name not in {"time_spent.csv"}:
-#             # keep combined outputs; delete only per-scene files (YYYYMMDDTHHMMSS.csv)
-#             if len(name) == len("YYYYMMDDTHHMMSS.csv"):
-#                 try:
-#                     os.remove(os.path.join(out_dir, name))
-#                     cnt += 1
-#                 except Exception:
-#                     pass
-#     if cnt:
-#         logger.info(f"Removed {cnt} per-scene CSV files from {out_dir}.")
-#     return cnt
 
 # ---------------------------------------------------------------------
 # Main worker
@@ -473,15 +408,6 @@ def process_chlorophyll_data(datastore,
             _append_time(time_log_file, entry_name, spent)
             logger.info(f"Processing time for {entry_name}: {spent:.2f}s")
 
-    # Post: tidy combined points & write daily aggregates
-    # dedupe_sort_points(points_csv_path)
-    # if daily_stats:
-    #     write_daily_aggregates(points_csv_path, daily_csv_path, daily_stats)
-
-    # if cleanup:
-    #     cleanup_scene_csvs(output_dir)
-
-    # logger.info("Done.")
 
 def _cleanup_files(paths: List[str]) -> None:
     for p in paths:
@@ -500,8 +426,8 @@ def _append_time(path: str, entry_name: str, seconds: float) -> None:
 # ---------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description="Chlorophyll downloader/processor (idempotent, NT>STC>NR) with combined & daily outputs.")
-    parser.add_argument("--start", default="2021-08-05", help="Start date YYYY-MM-DD")
-    parser.add_argument("--end",   default="2021-08-11", help="End date YYYY-MM-DD")
+    parser.add_argument("--start", default="2016-11-01", help="Start date YYYY-MM-DD")
+    parser.add_argument("--end",   default=None, help="End date YYYY-MM-DD")
 
     parser.add_argument("--lon", type=float, default=-66.025, help="ROI center longitude")
     parser.add_argument("--lat", type=float, default=18.425,   help="ROI center latitude")
@@ -518,19 +444,12 @@ def main():
     parser.add_argument("--file-log", action="store_true", help="Also write a runtime .log file in --log-dir")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG","INFO","WARNING","ERROR"], help="Console log level")
 
-    # New outputs & behavior
-    # parser.add_argument("--points", default=DEFAULT_POINTS_CSV, help="Combined points CSV (append-only, then de-dupe & sort)")
-    # parser.add_argument("--daily", default=DEFAULT_DAILY_CSV, help="Daily aggregates CSV")
-    # parser.add_argument("--daily-stats", nargs="+", default=["mean"],
-    #                     choices=["mean", "median", "min", "max", "std", "count"],
-    #                     help="Stats to compute per day over numeric variables (default: mean)")
-    # parser.add_argument("--cleanup", action=argparse.BooleanOptionalAction, default=True,
-    #                     help="Delete per-scene CSVs after combining (default: True)")
-
     parser.add_argument("--force", action="store_true", help="Reprocess even if product_id is already in the processed log")
     parser.add_argument("--throttle", type=float, default=0.2, help="Pause between entry downloads (seconds)")
 
     args = parser.parse_args()
+    if args.end is None:
+        args.end = yesterday_utc().strftime("%Y-%m-%d")
     logging.getLogger().setLevel(getattr(logging, args.log_level))
 
     # Optional runtime file logger
@@ -565,10 +484,6 @@ def main():
         output_dir=args.out,
         selected_products=extra,
         log_csv_path=log_csv_path,
-        # points_csv_path=args.points,
-        # daily_csv_path=args.daily,
-        # daily_stats=args.daily_stats,
-        # cleanup=args.cleanup,
         force=args.force,
         throttle_s=args.throttle
     )

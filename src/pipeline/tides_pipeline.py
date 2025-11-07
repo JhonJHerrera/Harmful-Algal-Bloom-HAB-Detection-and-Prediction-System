@@ -42,10 +42,10 @@ DEFAULT_INTERVAL = "h"       # applies only where valid (e.g., water_level)
 DEFAULT_UNITS = "metric"
 DEFAULT_TZ = "gmt"
 
-OUT_DIR = "data/tide_data"                      # per-product CSVs
-FINAL_CSV = "data/tide_data/tide_data.csv"      # merged daily CSV (date + products)
-LOG_DIR = "logs"
-MONTH_LOG = "logs/tides_processed_log.csv"      # month-level status log
+OUT_DIR = "src/pipeline/data/tide_data"                      # per-product CSVs
+FINAL_CSV = "src/pipeline/data/tide_data/tide_data.csv"      # merged daily CSV (date + products)
+LOG_DIR = "src/pipeline/logs"
+MONTH_LOG = "src/pipeline/logs/tides_processed_log.csv"      # month-level status log
 
 # Products that accept 'datum' and/or 'interval'
 PRODUCTS_NEED_DATUM = {"water_level"}
