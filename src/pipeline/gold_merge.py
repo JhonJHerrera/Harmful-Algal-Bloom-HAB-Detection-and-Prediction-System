@@ -157,6 +157,71 @@ def _read_daily_csv(path: Optional[str], label: str) -> pd.DataFrame:
     df = df.dropna(subset=["date"]).drop_duplicates(subset=["date"], keep="last").sort_values("date")
     return df
 
+def _read_caricoos_pr2_daily(path: Optional[str], label: str = "CARICOOS_PR2") -> pd.DataFrame:
+    """
+    Reads CariCOOS PR2 met CSV (10-min) and aggregates to daily:
+      - expects a datetime column like 'time'
+      - expects a wind column like 'wind_speed' or 'wind speed'
+    Returns columns: ['date', 'wind_avg'] (daily mean).
+    """
+    if not path or not os.path.exists(path):
+        logger.info(f"{label}: not found -> skip")
+        return pd.DataFrame(columns=["date"])
+
+    # Read header to discover column names (robust to schema changes)
+    try:
+        cols = pd.read_csv(path, nrows=0).columns.tolist()
+    except Exception as e:
+        logger.warning(f"{label}: could not read header {path}: {e}")
+        return pd.DataFrame(columns=["date"])
+
+    # Identify time column
+    time_col = None
+    for c in cols:
+        if c.strip().lower() in ("time", "datetime", "timestamp", "date_time"):
+            time_col = c
+            break
+    if time_col is None:
+        logger.warning(f"{label}: missing time column in {path} (expected 'time')")
+        return pd.DataFrame(columns=["date"])
+
+    # Identify wind speed column (handle 'wind_speed' and 'wind speed')
+    wind_col = None
+    for c in cols:
+        cl = c.strip().lower()
+        if cl in ("wind_speed", "wind speed"):
+            wind_col = c
+            break
+    if wind_col is None:
+        logger.warning(f"{label}: missing wind speed column in {path} (expected 'wind_speed' or 'wind speed')")
+        return pd.DataFrame(columns=["date"])
+
+    usecols = [time_col, wind_col]
+    try:
+        df = pd.read_csv(path, usecols=usecols)
+    except Exception as e:
+        logger.warning(f"{label}: could not read {path}: {e}")
+        return pd.DataFrame(columns=["date"])
+
+    df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+    df = df.dropna(subset=[time_col])
+
+    # Daily aggregation
+    df["date"] = df[time_col].dt.normalize()
+    df = df.dropna(subset=["date"])
+
+    # Ensure numeric wind
+    df[wind_col] = pd.to_numeric(df[wind_col], errors="coerce")
+
+    daily = (
+        df.groupby("date", as_index=False)[wind_col]
+          .mean()
+          .rename(columns={wind_col: "AWND"})
+          .sort_values("date")
+    )
+
+    return daily
+
 def _subset_window(df: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
     if df.empty:
         return df
@@ -299,7 +364,7 @@ def _reorder_columns_on_create_no_prefix(df: pd.DataFrame,
     if "date" in cols:
         cols.remove("date")
 
-    group_names = ["chl", "ncei", "tides", "goes"]
+    group_names = ["chl", "ncei", "caricoos", "tides", "goes"]
     ordered = ["date"]
     seen = set(["date"])
 
@@ -322,6 +387,7 @@ def merge_gold(
     ncei_path: Optional[str],
     goes_daily_path: Optional[str],
     chl_daily_path: Optional[str],
+    caricoos_pr2_path: Optional[str],
     final_csv: str,
     start: Optional[str],
     end: Optional[str],
@@ -333,7 +399,7 @@ def merge_gold(
 ) -> str:
 
     # 1) Global window
-    inputs = [p for p in [tides_path, ncei_path, goes_daily_path, chl_daily_path] if p]
+    inputs = [p for p in [tides_path, ncei_path, goes_daily_path, chl_daily_path, caricoos_pr2_path] if p]
     start_ts, end_ts = resolve_window(final_csv, start, end, inputs)
     os.makedirs(os.path.dirname(final_csv) or ".", exist_ok=True)
 
@@ -358,19 +424,26 @@ def merge_gold(
     goes  = _read_daily_csv(goes_daily_path, "GOES")
     goes  = _normalize_goes_columns(goes)
     chl   = _read_daily_csv(chl_daily_path,  "CHL")
+    caricoos = _read_caricoos_pr2_daily(caricoos_pr2_path, "CARICOOS_PR2")
+
 
     # 4) Per-source normalization / renames (NO prefixes)
     # NCEI renames
     ncei_ren = {
-        "AWND": "wind_avg",        # average wind speed
-        "PRCP": "precipitation",   # precipitation
-        "TMAX": "temp_max",        # max temperature
-        "TMIN": "temp_min",        # min temperature
-        "WSF2": "wind_speed_2m",   # 2-min avg wind (or gust at 2m, depends on feed)
+        "PRCP": "precipitation",
+        "TMAX": "temp_max",
+        "TMIN": "temp_min",
+        "WSF2": "wind_speed_2m",
     }
     if "station" in ncei.columns:
         ncei = ncei.drop(columns=["station"])
+
     ncei = ncei.rename(columns=ncei_ren)
+
+    # DROP AWND so it never reaches the gold
+    if "AWND" in ncei.columns:
+        ncei = ncei.drop(columns=["AWND"])
+
 
     # GOES rename
     goes_ren = {"Magnitude": "Watt_per_m2"}
@@ -391,11 +464,13 @@ def merge_gold(
     ncei_cols_all  = set([c for c in ncei.columns  if c != "date"])
     goes_cols_all  = set([c for c in goes.columns  if c != "date"])
     chl_cols_all   = set([c for c in chl.columns   if c != "date"])
+    caricoos_cols_all = set([c for c in caricoos.columns if c != "date"])
 
     # For first creation, remember groups to order columns nicely
     groups = {
         "tides": set(tides_cols_all),
         "ncei":  set(ncei_cols_all),
+        "caricoos": set(caricoos_cols_all),
         "goes":  set(goes_cols_all),
         "chl":   set(chl_cols_all),
     }
@@ -453,6 +528,17 @@ def merge_gold(
             base = _overlay_upsert_by_source(base, ncei_src, list(ncei_cols), start_ncei, end_ncei, force)
             already_used.update(ncei_cols)
 
+    # ----- CARICOOS PR2 -----
+    caricoos_cols = _drop_colliding_columns(caricoos_cols_all, already_used, "CARICOOS_PR2")
+    start_car, end_car = _source_window(caricoos, "CARICOOS_PR2", caricoos_cols)
+    if start_car and end_car:
+        car_src = _prepare_source_no_prefix(_subset_window(caricoos, start_car, end_car),
+                                            start_car, end_car, renames=None)
+        if not car_src.empty and caricoos_cols:
+            car_src = car_src[[c for c in caricoos_cols if c in car_src.columns]]
+            base = _overlay_upsert_by_source(base, car_src, list(caricoos_cols), start_car, end_car, force)
+            already_used.update(caricoos_cols)
+
     # ----- GOES -----
     goes_cols = _drop_colliding_columns(goes_cols_all, already_used, "GOES")
     start_goes, end_goes = _source_window(goes, "GOES", goes_cols)
@@ -496,6 +582,8 @@ def merge_gold(
                      if _last_date_with_source_data(base, list(goes_cols_all)) else None,
             "chl":   str(_last_date_with_source_data(base, list(chl_cols_all)).date())
                      if _last_date_with_source_data(base, list(chl_cols_all)) else None,
+            "caricoos": str(_last_date_with_source_data(base, list(caricoos_cols_all)).date())
+                     if _last_date_with_source_data(base, list(caricoos_cols_all)) else None,
         }
         os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
         tmp = state_path + ".part"
@@ -538,6 +626,8 @@ def main():
                     help="Disable historical backfill (only continue after last written date).")
 
     ap.add_argument("--log-level", default="INFO", choices=["DEBUG","INFO","WARNING","ERROR"])
+    ap.add_argument("--caricoos-pr2", default="src/pipeline/data/caricoos_pr2/PR2_met_2016_2025.csv",
+                help="CariCOOS PR2 met CSV (10-min). Used to build daily wind_avg from wind_speed.")
 
     args = ap.parse_args()
     logging.getLogger().setLevel(getattr(logging, args.log_level))
@@ -547,6 +637,7 @@ def main():
         ncei_path=norm(args.ncei),
         goes_daily_path=norm(args.goes),
         chl_daily_path=norm(args.chl),
+        caricoos_pr2_path=norm(args.caricoos_pr2),
         final_csv=norm(args.out),
         start=args.start,
         end=args.end,
