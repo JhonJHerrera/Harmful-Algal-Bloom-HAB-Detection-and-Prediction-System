@@ -3,3 +3,7 @@ src/pipeline/final_data/gold_state.json
 /utils/__pycache__
 .DS_Store
 .ipynb_checkpoints/create-auth-file-checkpoint.ipynb
+src/pipeline/final_data/SJL_daily_df3.csv
+src/pipeline/final_data/SJL_daily_df2.csv
+src/pipeline/data/caricoos_pr23/PR2_met_2016_2025.csv
+src/pipeline/data/caricoos_pr2/PR2_met.csv
